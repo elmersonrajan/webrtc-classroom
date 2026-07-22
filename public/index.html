@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Virtual Classroom</title>
 <link rel="stylesheet" href="css/styles.css">
 </head>
@@ -28,7 +29,7 @@
 
     <!-- Whiteboard / main video canvas -->
     <div class="stage">
-      <div class="toolbar">
+      <div class="toolbar instructor-only">
         <button class="tool-btn" id="draw-btn"><span>&#9998;</span> Draw</button>
         <button class="tool-btn" id="screen-btn"><span>&#128421;</span> Entire Screen</button>
         <button class="tool-btn" id="whiteboard-btn"><span>&#128203;</span> Whiteboard</button>
@@ -40,10 +41,10 @@
 
     <!-- Bottom control bar -->
     <div class="controls">
-      <button class="ctrl-btn" id="video-toggle-btn">Video Off</button>
+      <button class="ctrl-btn instructor-only" id="video-toggle-btn">Video Off</button>
       <button class="ctrl-btn" id="mic-toggle-btn">Mute Mic</button>
-      <button class="ctrl-btn" id="mute-others-btn">Mute Others</button>
-      <button class="ctrl-btn" id="record-btn">Record</button>
+      <button class="ctrl-btn instructor-only" id="mute-others-btn">Mute Others</button>
+      <button class="ctrl-btn instructor-only" id="record-btn">Record</button>
       <button class="ctrl-btn danger" id="leave-btn">Leave Session</button>
     </div>
   </div>
@@ -52,7 +53,7 @@
   <div class="sidebar">
     <div class="video-panel">
       <div class="panel-header">Instructor Video</div>
-      <video id="local-video" autoplay playsinline muted></video>
+      <video id="instructor-video-el" autoplay playsinline></video>
     </div>
 
     <div class="participants-panel">
