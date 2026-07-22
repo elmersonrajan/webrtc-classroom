@@ -87,3 +87,47 @@ body { background: #eef1f5; color: #1a1a2e; height: 100vh; overflow: hidden; }
 .chat-input-row button {
   background: #0b2a5b; color: #fff; border: none; padding: 0 16px; cursor: pointer;
 }
+
+/* ---------- Role-based visibility ---------- */
+/* Elements marked instructor-only are hidden entirely for students */
+.role-student .instructor-only { display: none !important; }
+
+/* An audio-only remote peer (student with no camera) still needs its
+   <video> element in the DOM so their mic audio plays - just hide it visually */
+.remote-videos video.audio-only { display: none; }
+
+/* ---------- Mobile / small screens ---------- */
+@media (max-width: 820px) {
+  html, body { height: auto; min-height: 100vh; overflow-y: auto; }
+
+  .classroom {
+    flex-direction: column;
+    height: auto;
+    min-height: 100vh;
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .main-area { gap: 8px; }
+
+  .stage { min-height: 260px; }
+
+  .toolbar { padding: 6px; gap: 6px; }
+  .tool-btn { padding: 6px 10px; font-size: 12px; }
+  .tool-btn span { display: none; } /* icons only on small screens, saves space */
+
+  #whiteboard { touch-action: none; } /* keep drawing gestures working, block page scroll while drawing */
+
+  .controls { padding: 8px; gap: 6px; }
+  .ctrl-btn { min-width: 0; flex: 1 1 40%; padding: 10px 6px; font-size: 12px; }
+
+  .sidebar { width: 100%; }
+  .video-panel video { height: 140px; }
+
+  .participants-panel { min-height: 80px; max-height: 160px; }
+  .remote-videos { grid-template-columns: 1fr 1fr 1fr; }
+
+  .chat-panel { height: 180px; }
+
+  .join-card { width: 88vw; max-width: 340px; }
+}
