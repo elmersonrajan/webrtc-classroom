@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Virtual Classroom</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- ===== JOIN SCREEN ===== -->
+<div id="join-screen" class="join-screen">
+  <div class="join-card">
+    <h1>Join classroom</h1>
+    <input id="name-input" type="text" placeholder="Your name" value="">
+    <select id="role-input">
+      <option value="instructor">Instructor</option>
+      <option value="student">Student</option>
+    </select>
+    <input id="room-input" type="text" placeholder="Room ID" value="demo-room">
+    <button id="join-btn">Join session</button>
+  </div>
+</div>
+
+<!-- ===== CLASSROOM SCREEN ===== -->
+<div id="classroom" class="classroom hidden">
+
+  <div class="main-area">
+
+    <!-- Whiteboard / main video canvas -->
+    <div class="stage">
+      <div class="toolbar">
+        <button class="tool-btn" id="draw-btn"><span>&#9998;</span> Draw</button>
+        <button class="tool-btn" id="screen-btn"><span>&#128421;</span> Entire Screen</button>
+        <button class="tool-btn" id="whiteboard-btn"><span>&#128203;</span> Whiteboard</button>
+        <button class="tool-btn" id="clip-btn"><span>&#9654;</span> Video Clip</button>
+      </div>
+      <canvas id="whiteboard" width="1000" height="600"></canvas>
+      <video id="screen-video" autoplay playsinline class="hidden"></video>
+    </div>
+
+    <!-- Bottom control bar -->
+    <div class="controls">
+      <button class="ctrl-btn" id="video-toggle-btn">Video Off</button>
+      <button class="ctrl-btn" id="mic-toggle-btn">Mute Mic</button>
+      <button class="ctrl-btn" id="mute-others-btn">Mute Others</button>
+      <button class="ctrl-btn" id="record-btn">Record</button>
+      <button class="ctrl-btn danger" id="leave-btn">Leave Session</button>
+    </div>
+  </div>
+
+  <!-- Right sidebar -->
+  <div class="sidebar">
+    <div class="video-panel">
+      <div class="panel-header">Instructor Video</div>
+      <video id="local-video" autoplay playsinline muted></video>
+    </div>
+
+    <div class="participants-panel">
+      <div class="panel-header" id="participants-header">Participants (0)</div>
+      <div id="participants-list" class="participants-list"></div>
+      <div id="remote-videos" class="remote-videos"></div>
+    </div>
+
+    <div class="chat-panel">
+      <div class="panel-header">Chat / QA</div>
+      <div id="chat-log" class="chat-log"></div>
+      <div class="chat-input-row">
+        <input id="chat-input" type="text" placeholder="Type a message...">
+        <button id="chat-send-btn">Send</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/socket.js"></script>
+<script src="js/webrtc.js"></script>
+<script src="js/whiteboard.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
