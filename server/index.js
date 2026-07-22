@@ -6,12 +6,25 @@
 //    directly between browsers via WebRTC)
 
 const express = require('express');
-const http = require('http');
+const https = require('https');
+const fs = require('fs');
 const { Server } = require('socket.io');
 const path = require('path');
 
 const app = express();
-const server = http.createServer(app);
+
+// HTTPS is required for camera/mic access from any device that isn't
+// "localhost" itself (e.g. your phone on the same WiFi). We use a
+// self-signed certificate here - fine for local demos, browsers will
+// show a one-time "not secure" warning that you click through.
+const server = https.createServer(
+  {
+    key: fs.readFileSync(path.join(__dirname, '..', 'certs', 'key.pem')),
+    cert: fs.readFileSync(path.join(__dirname, '..', 'certs', 'cert.pem')),
+  },
+  app
+);
+
 const io = new Server(server);
 
 // Serve everything inside /public as static files (index.html, css, js)
@@ -93,6 +106,9 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Classroom server running at http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Classroom server running:`);
+  console.log(`  - On this computer:  https://localhost:${PORT}`);
+  console.log(`  - On your phone/other devices (same WiFi): https://<this-computer's-local-IP>:${PORT}`);
+  console.log(`    (find your local IP with 'ipconfig' on Windows or 'ifconfig'/'ip addr' on Mac/Linux)`);
 });
