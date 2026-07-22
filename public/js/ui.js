@@ -8,11 +8,13 @@ document.getElementById('join-btn').addEventListener('click', async () => {
   const roomId = document.getElementById('room-input').value.trim() || 'demo-room';
 
   try {
-    await startLocalMedia();
+    await startLocalMedia(role);
   } catch (err) {
-    alert('Could not access camera/mic: ' + err.message);
+    alert('Could not access microphone: ' + err.message);
     return;
   }
+
+  document.body.classList.add('role-' + role); // lets CSS hide instructor-only controls for students
 
   joinRoom(name, role, roomId);
 
@@ -39,20 +41,74 @@ document.getElementById('mute-others-btn').addEventListener('click', () => {
   Object.keys(peers).forEach(id => socket.emit('mute-participant', { targetId: id }));
 });
 
+// Composite recording: draws the whiteboard (or screen share, whichever is
+// currently visible) as the main frame, with the instructor's own camera as
+// a small picture-in-picture overlay in the corner - so the recording shows
+// BOTH the board and the teacher, not just the camera.
 let mediaRecorder = null;
 let recordedChunks = [];
+let recordCanvas = null;
+let recordCtx = null;
+let recordAnimationId = null;
+
+function startCompositeRecording() {
+  recordCanvas = document.createElement('canvas');
+  recordCanvas.width = 1280;
+  recordCanvas.height = 720;
+  recordCtx = recordCanvas.getContext('2d');
+
+  const whiteboardEl = document.getElementById('whiteboard');
+  const screenVideoEl = document.getElementById('screen-video');
+  const cameraEl = document.getElementById('instructor-video-el');
+
+  function drawFrame() {
+    recordCtx.fillStyle = '#ffffff';
+    recordCtx.fillRect(0, 0, recordCanvas.width, recordCanvas.height);
+
+    // Main frame: screen share if it's active, otherwise the whiteboard
+    const usingScreenShare = !screenVideoEl.classList.contains('hidden') && screenVideoEl.videoWidth > 0;
+    if (usingScreenShare) {
+      recordCtx.drawImage(screenVideoEl, 0, 0, recordCanvas.width, recordCanvas.height);
+    } else {
+      recordCtx.drawImage(whiteboardEl, 0, 0, recordCanvas.width, recordCanvas.height);
+    }
+
+    // Picture-in-picture: instructor's camera, bottom-right corner
+    if (cameraEl.videoWidth > 0) {
+      const w = 220, h = 165, margin = 20;
+      const x = recordCanvas.width - w - margin;
+      const y = recordCanvas.height - h - margin;
+      recordCtx.drawImage(cameraEl, x, y, w, h);
+      recordCtx.strokeStyle = '#0b2a5b';
+      recordCtx.lineWidth = 3;
+      recordCtx.strokeRect(x, y, w, h);
+    }
+
+    recordAnimationId = requestAnimationFrame(drawFrame);
+  }
+  drawFrame();
+
+  // Combine the composited canvas (video) with the instructor's mic (audio)
+  const canvasStream = recordCanvas.captureStream(30);
+  const audioTracks = localStream.getAudioTracks();
+  const combinedStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(combinedStream);
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    cancelAnimationFrame(recordAnimationId);
+    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'session-recording.webm'; a.click();
+  };
+  mediaRecorder.start();
+}
+
 document.getElementById('record-btn').addEventListener('click', function () {
   if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-    recordedChunks = [];
-    mediaRecorder = new MediaRecorder(localStream);
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(recordedChunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'session-recording.webm'; a.click();
-    };
-    mediaRecorder.start();
+    startCompositeRecording();
     this.textContent = 'Stop Record';
     this.classList.add('active');
   } else {
