@@ -4,10 +4,14 @@
 // The Socket.IO connection (socket.js) is only used to exchange the
 // small setup messages (offer / answer / ICE candidates).
 
-// Free public STUN server - helps peers discover their own public IP.
+// Multiple STUN servers - if one is briefly slow/unreachable, others still work.
 // (A TURN server would be added here later for networks with strict NATs.)
 const ICE_SERVERS = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
+  ]
 };
 
 let localStream = null;
@@ -43,6 +47,7 @@ async function startLocalMedia(role) {
 function createPeerConnection(remoteId, remoteName) {
   const pc = new RTCPeerConnection(ICE_SERVERS);
   peers[remoteId] = pc;
+  pendingCandidates[remoteId] = [];
 
   // Send our local tracks (camera+mic) to this peer
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -51,6 +56,23 @@ function createPeerConnection(remoteId, remoteName) {
   pc.onicecandidate = (event) => {
     if (event.candidate) {
       socket.emit('signal', { to: remoteId, data: { type: 'ice-candidate', candidate: event.candidate } });
+    }
+  };
+
+  // If the connection drops or fails (common on flaky WiFi), try to
+  // self-heal instead of leaving that participant frozen/silent forever.
+  pc.oniceconnectionstatechange = () => {
+    const state = pc.iceConnectionState;
+    if (state === 'failed') {
+      attemptIceRestart(remoteId, pc);
+    } else if (state === 'disconnected') {
+      // 'disconnected' can recover on its own within a couple seconds -
+      // only step in if it's still stuck after a short grace period
+      setTimeout(() => {
+        if (peers[remoteId] === pc && pc.iceConnectionState === 'disconnected') {
+          attemptIceRestart(remoteId, pc);
+        }
+      }, 3000);
     }
   };
 
@@ -85,9 +107,40 @@ function createPeerConnection(remoteId, remoteName) {
   return pc;
 }
 
+// Only the side that originally sent the offer restarts ICE, to avoid both
+// sides trying to renegotiate at once (which causes its own instability).
+const isInitiator = {}; // remoteId -> bool
+
+async function attemptIceRestart(remoteId, pc) {
+  if (peers[remoteId] !== pc) return; // already replaced/closed
+  if (!isInitiator[remoteId]) return; // let the other side drive the restart
+  try {
+    const offer = await pc.createOffer({ iceRestart: true });
+    await pc.setLocalDescription(offer);
+    socket.emit('signal', { to: remoteId, data: { type: 'offer', sdp: offer } });
+  } catch (e) {
+    console.warn('ICE restart failed for', remoteId, e);
+  }
+}
+
+// Candidates that arrive before we've set the remote description yet get
+// queued here instead of being silently dropped (a common cause of
+// "sometimes no video/audio" on real networks where messages can arrive
+// slightly out of order).
+const pendingCandidates = {}; // remoteId -> [candidate, ...]
+
+async function flushPendingCandidates(remoteId, pc) {
+  const queued = pendingCandidates[remoteId] || [];
+  pendingCandidates[remoteId] = [];
+  for (const candidate of queued) {
+    try { await pc.addIceCandidate(candidate); } catch (e) { console.warn(e); }
+  }
+}
+
 // Called when we already know about a peer and need to INITIATE the connection
 async function callPeer(remoteId, remoteName) {
   const pc = createPeerConnection(remoteId, remoteName);
+  isInitiator[remoteId] = true;
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   socket.emit('signal', { to: remoteId, data: { type: 'offer', sdp: offer } });
@@ -100,27 +153,44 @@ socket.on('signal', async ({ from, data }) => {
   if (data.type === 'offer') {
     if (!pc) pc = createPeerConnection(from, participants[from]?.name);
     await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    await flushPendingCandidates(from, pc); // any candidates that arrived early can now be applied
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     socket.emit('signal', { to: from, data: { type: 'answer', sdp: answer } });
 
   } else if (data.type === 'answer') {
-    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    if (pc) {
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      await flushPendingCandidates(from, pc);
+    }
 
   } else if (data.type === 'ice-candidate') {
-    if (pc) {
+    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+      // Remote description already set - safe to apply immediately
       try { await pc.addIceCandidate(data.candidate); } catch (e) { console.warn(e); }
+    } else {
+      // Remote description not set yet - queue it instead of dropping it
+      if (!pendingCandidates[from]) pendingCandidates[from] = [];
+      pendingCandidates[from].push(data.candidate);
     }
   }
 });
 
-// The server tells us who is already in the room when we join.
-// We INITIATE a call to each of them.
+// The server tells us who is already in the room when we join (or rejoin
+// after a brief disconnect). We INITIATE a call to each of them - but skip
+// anyone we already have a live connection to, so a reconnect doesn't
+// create duplicate connections.
 socket.on('existing-participants', (list) => {
   list.forEach(p => {
     participants[p.id] = { name: p.name, role: p.role };
-    addParticipantToList(p.id, p.name);
-    callPeer(p.id, p.name);
+    if (!document.getElementById('participant-' + p.id)) addParticipantToList(p.id, p.name);
+
+    const existingPc = peers[p.id];
+    const alreadyConnected = existingPc &&
+      (existingPc.connectionState === 'connected' || existingPc.connectionState === 'connecting');
+    if (!alreadyConnected) {
+      callPeer(p.id, p.name);
+    }
   });
   updateParticipantCount();
 });
@@ -128,13 +198,15 @@ socket.on('existing-participants', (list) => {
 // Someone new joined after us - we just wait for their offer (they call us)
 socket.on('participant-joined', ({ id, name, role }) => {
   participants[id] = { name, role };
-  addParticipantToList(id, name);
+  if (!document.getElementById('participant-' + id)) addParticipantToList(id, name);
   updateParticipantCount();
 });
 
 socket.on('participant-left', ({ id }) => {
   if (peers[id]) { peers[id].close(); delete peers[id]; }
   delete participants[id];
+  delete pendingCandidates[id];
+  delete isInitiator[id];
   const videoEl = document.getElementById('video-' + id);
   if (videoEl) videoEl.remove();
   const rowEl = document.getElementById('participant-' + id);
