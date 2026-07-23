@@ -19,7 +19,7 @@ function joinRoom(name, role, roomId) {
   myRole = role;
   myRoomId = roomId;
   hasJoinedOnce = true;
-  socket.emit('join-room', { roomId, name, role });
+  socket.emit('join-room', { roomId, name, role }); //sends event to nodejs server/index.js
 }
 
 // A brief WiFi drop disconnects the socket. Socket.IO reconnects
