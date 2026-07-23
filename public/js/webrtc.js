@@ -30,7 +30,11 @@ async function startLocalMedia(role) {
   // Students will have this panel filled in later, once the instructor's
   // remote video track arrives (see ontrack below).
   if (role === 'instructor') {
-    document.getElementById('instructor-video-el').srcObject = localStream;
+    const el = document.getElementById('instructor-video-el');
+    el.srcObject = localStream;
+    el.muted = true; // this is YOUR OWN mic playing back - mute locally so you don't hear yourself.
+                      // Other participants still hear you fine, since their copy of this
+                      // element (filled via the remote instructor track below) is not muted.
   }
 
   return localStream;
