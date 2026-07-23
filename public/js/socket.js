@@ -2,18 +2,37 @@
 // Connects to the signaling server and exposes a few globals
 // that webrtc.js and ui.js use.
 
-const socket = io(); // connects back to the same server that served this page
+const socket = io({
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+});
 
 let myName = '';
 let myRole = '';
 let myRoomId = '';
+let hasJoinedOnce = false;
 
 function joinRoom(name, role, roomId) {
   myName = name;
   myRole = role;
   myRoomId = roomId;
+  hasJoinedOnce = true;
   socket.emit('join-room', { roomId, name, role });
 }
+
+// A brief WiFi drop disconnects the socket. Socket.IO reconnects
+// automatically, but with a NEW connection - the server no longer
+// considers us part of the room, so chat/whiteboard/participant events
+// would silently stop arriving. Rejoining on every (re)connect fixes that.
+// (Existing WebRTC peer connections are handled separately in webrtc.js -
+// this only restores the signaling/chat side.)
+socket.on('connect', () => {
+  if (hasJoinedOnce) {
+    socket.emit('join-room', { roomId: myRoomId, name: myName, role: myRole });
+  }
+});
 
 // Chat
 function sendChatMessage(message) {
