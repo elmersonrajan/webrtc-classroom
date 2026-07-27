@@ -75,14 +75,30 @@ function startCompositeRecording() {
 
     // Picture-in-picture: instructor's camera, bottom-right corner
     if (cameraEl.videoWidth > 0) {
-      const w = 220, h = 165, margin = 20;
-      const x = recordCanvas.width - w - margin;
-      const y = recordCanvas.height - h - margin;
-      recordCtx.drawImage(cameraEl, x, y, w, h);
-      recordCtx.strokeStyle = '#0b2a5b';
-      recordCtx.lineWidth = 3;
-      recordCtx.strokeRect(x, y, w, h);
-    }
+  const w = 220, h = 165, margin = 20;
+  const x = recordCanvas.width - w - margin;
+  const y = recordCanvas.height - h - margin;
+
+  // Save current canvas state
+  recordCtx.save();
+
+  // Move to the right side of the camera box
+  recordCtx.translate(x + w, y);
+
+  // Flip horizontally
+  recordCtx.scale(-1, 1);
+
+  // Draw mirrored camera
+  recordCtx.drawImage(cameraEl, 0, 0, w, h);
+
+  // Restore normal canvas direction
+  recordCtx.restore();
+
+  // Draw normal border
+  recordCtx.strokeStyle = '#0b2a5b';
+  recordCtx.lineWidth = 3;
+  recordCtx.strokeRect(x, y, w, h);
+}
 
     recordAnimationId = requestAnimationFrame(drawFrame);
   }
