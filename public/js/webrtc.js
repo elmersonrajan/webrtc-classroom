@@ -50,6 +50,14 @@ async function startLocalMedia(role) {
 // Called once, right after joining a room - sets up the mediasoup Device
 // and both transports, then starts sending our own camera/mic.
 async function setupMediasoup(roomId, role) {
+  await window.mediasoupClientReadyPromise; // wait for the CDN import (see index.html) to finish
+  if (!window.mediasoupClient || !window.mediasoupClient.Device) {
+    throw new Error(
+      'The mediasoup-client library failed to load from the CDN. ' +
+      'Check your internet connection and the browser console (F12) for the underlying error.'
+    );
+  }
+
   const { rtpCapabilities } = await emitWithAck('get-router-rtp-capabilities', { roomId });
 
   device = new window.mediasoupClient.Device();
