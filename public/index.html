@@ -78,10 +78,19 @@
 <script src="/socket.io/socket.io.js"></script>
 <script type="module">
   // mediasoup-client is published for Node/bundlers, not as a plain browser
-  // script - this CDN auto-converts it to an ESM build we can import directly,
-  // no local bundler (webpack/esbuild) needed.
-  import { Device } from "https://cdn.jsdelivr.net/npm/mediasoup-client@3/+esm";
-  window.mediasoupClient = { Device };
+  // script - esm.sh converts it to a browser-ready ESM build on the fly.
+  // (jsDelivr's "+esm" was tried first but has known conversion bugs with
+  // some CJS packages - esm.sh is more reliable for this.)
+  window.mediasoupClientReadyPromise = (async () => {
+    try {
+      const mod = await import("https://esm.sh/mediasoup-client@3");
+      window.mediasoupClient = mod;
+      console.log('mediasoup-client loaded OK');
+    } catch (err) {
+      console.error('Failed to load mediasoup-client from CDN:', err);
+      window.mediasoupClientLoadError = err;
+    }
+  })();
 </script>
 <script src="js/socket.js"></script>
 <script src="js/webrtc.js"></script>
