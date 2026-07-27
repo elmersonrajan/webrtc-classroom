@@ -76,14 +76,28 @@ io.on('connection', (socket) => {
   });
 
   // --- Whiteboard drawing sync ---
+  // Only the instructor is allowed to draw - enforced here too, not just
+  // in the browser, so a modified client can't bypass it.
   socket.on('draw', (strokeData) => {
     const roomId = socket.data.roomId;
-    if (roomId) socket.to(roomId).emit('draw', strokeData);
+    if (roomId && socket.data.role === 'instructor') socket.to(roomId).emit('draw', strokeData);
   });
 
   socket.on('clear-board', () => {
     const roomId = socket.data.roomId;
-    if (roomId) socket.to(roomId).emit('clear-board');
+    if (roomId && socket.data.role === 'instructor') socket.to(roomId).emit('clear-board');
+  });
+
+  // --- Screen share broadcast ---
+  // Tells everyone in the room to switch their main stage view over to the
+  // instructor's screen-share track (which is already flowing to them via
+  // WebRTC) instead of the whiteboard.
+  socket.on('screen-share-started', ({ roomId }) => {
+    socket.to(roomId).emit('screen-share-started');
+  });
+
+  socket.on('screen-share-stopped', ({ roomId }) => {
+    socket.to(roomId).emit('screen-share-stopped');
   });
 
   // --- Instructor controls ---
