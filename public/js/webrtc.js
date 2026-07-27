@@ -15,6 +15,7 @@ const ICE_SERVERS = {
 };
 
 let localStream = null;
+let instructorStream = null; // the instructor's incoming stream (students use this for screen share too)
 const peers = {}; // socketId -> RTCPeerConnection
 const participants = {}; // socketId -> { name, role }
 
@@ -85,6 +86,7 @@ function createPeerConnection(remoteId, remoteName) {
     // The instructor's stream always goes into the dedicated "Instructor
     // Video" panel, for every participant (including other instructors' view)
     if (remoteRole === 'instructor') {
+      instructorStream = stream;
       document.getElementById('instructor-video-el').srcObject = stream;
       return;
     }
@@ -214,6 +216,25 @@ socket.on('participant-left', ({ id }) => {
   updateParticipantCount();
 });
 
+// The instructor's video track (received above) also carries the screen
+// share once they start one (screen replaces camera on the same track -
+// see startScreenShare below). This broadcast just tells everyone WHEN to
+// switch their main stage view over to that track instead of the whiteboard.
+socket.on('screen-share-started', () => {
+  if (!instructorStream) return; // haven't received the instructor's video yet
+  const screenVideoEl = document.getElementById('screen-video');
+  screenVideoEl.srcObject = instructorStream;
+  screenVideoEl.classList.remove('hidden');
+  document.getElementById('whiteboard').classList.add('hidden');
+});
+
+socket.on('screen-share-stopped', () => {
+  const screenVideoEl = document.getElementById('screen-video');
+  screenVideoEl.classList.add('hidden');
+  screenVideoEl.srcObject = null;
+  document.getElementById('whiteboard').classList.remove('hidden');
+});
+
 function addParticipantToList(id, name) {
   const list = document.getElementById('participants-list');
   const row = document.createElement('div');
@@ -260,6 +281,7 @@ async function startScreenShare() {
 
   const screenVideo = document.getElementById('screen-video');
   screenVideo.srcObject = screenStream;
+  socket.emit('screen-share-started', { roomId: myRoomId });
 
   // When the user stops sharing (browser's built-in "Stop sharing" button),
   // switch back to the camera track automatically
@@ -276,4 +298,5 @@ function stopScreenShare() {
   });
   document.getElementById('screen-video').classList.add('hidden');
   document.getElementById('screen-video').srcObject = null;
+  socket.emit('screen-share-stopped', { roomId: myRoomId });
 }
