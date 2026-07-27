@@ -92,6 +92,10 @@ body { background: #eef1f5; color: #1a1a2e; height: 100vh; overflow: hidden; }
 /* Elements marked instructor-only are hidden entirely for students */
 .role-student .instructor-only { display: none !important; }
 
+/* Students can watch the whiteboard but not draw on it - only the
+   instructor's strokes (synced via Socket.IO) should appear */
+.role-student #whiteboard { pointer-events: none; cursor: default; }
+
 /* An audio-only remote peer (student with no camera) still needs its
    <video> element in the DOM so their mic audio plays - just hide it visually */
 .remote-videos video.audio-only { display: none; }
