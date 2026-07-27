@@ -18,6 +18,13 @@ document.getElementById('join-btn').addEventListener('click', async () => {
 
   joinRoom(name, role, roomId);
 
+  try {
+    await setupMediasoup(roomId, role);
+  } catch (err) {
+    alert('Could not connect to the media server: ' + err.message);
+    return;
+  }
+
   document.getElementById('join-screen').classList.add('hidden');
   document.getElementById('classroom').classList.remove('hidden');
 });
@@ -75,30 +82,14 @@ function startCompositeRecording() {
 
     // Picture-in-picture: instructor's camera, bottom-right corner
     if (cameraEl.videoWidth > 0) {
-  const w = 220, h = 165, margin = 20;
-  const x = recordCanvas.width - w - margin;
-  const y = recordCanvas.height - h - margin;
-
-  // Save current canvas state
-  recordCtx.save();
-
-  // Move to the right side of the camera box
-  recordCtx.translate(x + w, y);
-
-  // Flip horizontally
-  recordCtx.scale(-1, 1);
-
-  // Draw mirrored camera
-  recordCtx.drawImage(cameraEl, 0, 0, w, h);
-
-  // Restore normal canvas direction
-  recordCtx.restore();
-
-  // Draw normal border
-  recordCtx.strokeStyle = '#0b2a5b';
-  recordCtx.lineWidth = 3;
-  recordCtx.strokeRect(x, y, w, h);
-}
+      const w = 220, h = 165, margin = 20;
+      const x = recordCanvas.width - w - margin;
+      const y = recordCanvas.height - h - margin;
+      recordCtx.drawImage(cameraEl, x, y, w, h);
+      recordCtx.strokeStyle = '#0b2a5b';
+      recordCtx.lineWidth = 3;
+      recordCtx.strokeRect(x, y, w, h);
+    }
 
     recordAnimationId = requestAnimationFrame(drawFrame);
   }
@@ -136,6 +127,13 @@ document.getElementById('record-btn').addEventListener('click', function () {
 
 document.getElementById('leave-btn').addEventListener('click', () => {
   window.location.reload();
+});
+
+document.getElementById('close-session-btn').addEventListener('click', () => {
+  if (confirm('End the session for everyone? All students will be disconnected.')) {
+    socket.emit('end-session', { roomId: myRoomId });
+    window.location.reload();
+  }
 });
 
 // ---- Toolbar ----

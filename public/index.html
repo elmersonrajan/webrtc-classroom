@@ -45,6 +45,7 @@
       <button class="ctrl-btn" id="mic-toggle-btn">Mute Mic</button>
       <button class="ctrl-btn instructor-only" id="mute-others-btn">Mute Others</button>
       <button class="ctrl-btn instructor-only" id="record-btn">Record</button>
+      <button class="ctrl-btn danger instructor-only" id="close-session-btn">Close Session</button>
       <button class="ctrl-btn danger" id="leave-btn">Leave Session</button>
     </div>
   </div>
@@ -75,6 +76,13 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
+<script type="module">
+  // mediasoup-client is published for Node/bundlers, not as a plain browser
+  // script - this CDN auto-converts it to an ESM build we can import directly,
+  // no local bundler (webpack/esbuild) needed.
+  import { Device } from "https://cdn.jsdelivr.net/npm/mediasoup-client@3/+esm";
+  window.mediasoupClient = { Device };
+</script>
 <script src="js/socket.js"></script>
 <script src="js/webrtc.js"></script>
 <script src="js/whiteboard.js"></script>

@@ -1,22 +1,30 @@
 // public/js/webrtc.js
-// This file implements the "mesh" WebRTC topology:
-// every browser opens one RTCPeerConnection to every other browser.
-// The Socket.IO connection (socket.js) is only used to exchange the
-// small setup messages (offer / answer / ICE candidates).
-
-// Multiple STUN servers - if one is briefly slow/unreachable, others still work.
-// (A TURN server would be added here later for networks with strict NATs.)
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' }
-  ]
-};
+// SFU version: instead of connecting directly to every other browser (mesh),
+// this browser opens exactly TWO connections to the server - one to SEND
+// its own media ("send transport") and one to RECEIVE everyone else's
+// ("recv transport"). The server (mediasoup) handles forwarding media to
+// whoever needs it. This scales far better than mesh once you have more
+// than a handful of participants.
 
 let localStream = null;
-const peers = {}; // socketId -> RTCPeerConnection
-const participants = {}; // socketId -> { name, role }
+let device = null;            // mediasoup-client Device - knows what codecs this browser supports
+let sendTransport = null;     // our one outgoing connection to the server
+let recvTransport = null;     // our one incoming connection from the server
+let micProducer = null;
+let cameraProducer = null;
+let screenProducer = null;
+
+const participants = {};      // socketId -> { name, role }
+const mainStreams = {};       // socketId -> MediaStream combining that person's mic+camera
+const consumersByProducerId = {}; // producerId -> { consumer, socketId, mediaType }
+
+let readyToConsume = false;
+let queuedProducers = [];     // producers that arrived before we were ready to consume them
+
+// Wraps Socket.IO's callback-style requests in a Promise so we can use await
+function emitWithAck(event, data) {
+  return new Promise((resolve) => socket.emit(event, data, resolve));
+}
 
 async function startLocalMedia(role) {
   // Students don't need a camera - they only watch the board and the
@@ -30,188 +38,193 @@ async function startLocalMedia(role) {
     localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
   }
 
-  // Only the instructor's own preview goes in the "Instructor Video" panel.
-  // Students will have this panel filled in later, once the instructor's
-  // remote video track arrives (see ontrack below).
   if (role === 'instructor') {
     const el = document.getElementById('instructor-video-el');
     el.srcObject = localStream;
     el.muted = true; // this is YOUR OWN mic playing back - mute locally so you don't hear yourself.
-                      // Other participants still hear you fine, since their copy of this
-                      // element (filled via the remote instructor track below) is not muted.
   }
 
   return localStream;
 }
 
-function createPeerConnection(remoteId, remoteName) {
-  const pc = new RTCPeerConnection(ICE_SERVERS);
-  peers[remoteId] = pc;
-  pendingCandidates[remoteId] = [];
+// Called once, right after joining a room - sets up the mediasoup Device
+// and both transports, then starts sending our own camera/mic.
+async function setupMediasoup(roomId, role) {
+  const { rtpCapabilities } = await emitWithAck('get-router-rtp-capabilities', { roomId });
 
-  // Send our local tracks (camera+mic) to this peer
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  device = new window.mediasoupClient.Device();
+  await device.load({ routerRtpCapabilities: rtpCapabilities });
 
-  // When a new ICE candidate is found, forward it to the peer via the server
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      socket.emit('signal', { to: remoteId, data: { type: 'ice-candidate', candidate: event.candidate } });
-    }
-  };
+  await createSendTransport(roomId);
+  await createRecvTransport(roomId);
+  await produceLocalTracks();
 
-  // If the connection drops or fails (common on flaky WiFi), try to
-  // self-heal instead of leaving that participant frozen/silent forever.
-  pc.oniceconnectionstatechange = () => {
-    const state = pc.iceConnectionState;
-    if (state === 'failed') {
-      attemptIceRestart(remoteId, pc);
-    } else if (state === 'disconnected') {
-      // 'disconnected' can recover on its own within a couple seconds -
-      // only step in if it's still stuck after a short grace period
-      setTimeout(() => {
-        if (peers[remoteId] === pc && pc.iceConnectionState === 'disconnected') {
-          attemptIceRestart(remoteId, pc);
-        }
-      }, 3000);
-    }
-  };
-
-  // When we receive the remote peer's media, show it in a <video> tag
-  pc.ontrack = (event) => {
-    const remoteRole = participants[remoteId]?.role;
-    const stream = event.streams[0];
-    const hasVideo = stream.getVideoTracks().length > 0;
-
-    // The instructor's stream always goes into the dedicated "Instructor
-    // Video" panel, for every participant (including other instructors' view)
-    if (remoteRole === 'instructor') {
-      document.getElementById('instructor-video-el').srcObject = stream;
-      return;
-    }
-
-    // Everyone else (other students) gets a tile in the small grid.
-    // Camera-less peers still need a playing element for their mic audio -
-    // we just hide it visually rather than skip creating it.
-    let videoEl = document.getElementById('video-' + remoteId);
-    if (!videoEl) {
-      videoEl = document.createElement('video');
-      videoEl.id = 'video-' + remoteId;
-      videoEl.autoplay = true;
-      videoEl.playsinline = true;
-      document.getElementById('remote-videos').appendChild(videoEl);
-    }
-    videoEl.srcObject = stream;
-    videoEl.classList.toggle('audio-only', !hasVideo);
-  };
-
-  return pc;
+  readyToConsume = true;
+  queuedProducers.forEach(p => consumeProducer(roomId, p));
+  queuedProducers = [];
 }
 
-// Only the side that originally sent the offer restarts ICE, to avoid both
-// sides trying to renegotiate at once (which causes its own instability).
-const isInitiator = {}; // remoteId -> bool
+async function createSendTransport(roomId) {
+  const params = await emitWithAck('create-transport', { roomId, direction: 'send' });
+  sendTransport = device.createSendTransport(params);
 
-async function attemptIceRestart(remoteId, pc) {
-  if (peers[remoteId] !== pc) return; // already replaced/closed
-  if (!isInitiator[remoteId]) return; // let the other side drive the restart
-  try {
-    const offer = await pc.createOffer({ iceRestart: true });
-    await pc.setLocalDescription(offer);
-    socket.emit('signal', { to: remoteId, data: { type: 'offer', sdp: offer } });
-  } catch (e) {
-    console.warn('ICE restart failed for', remoteId, e);
+  sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+    emitWithAck('connect-transport', { roomId, transportId: sendTransport.id, dtlsParameters })
+      .then(callback).catch(errback);
+  });
+
+  sendTransport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
+    emitWithAck('produce', { roomId, transportId: sendTransport.id, kind, rtpParameters, appData })
+      .then(({ id }) => callback({ id })).catch(errback);
+  });
+}
+
+async function createRecvTransport(roomId) {
+  const params = await emitWithAck('create-transport', { roomId, direction: 'recv' });
+  recvTransport = device.createRecvTransport(params);
+
+  recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+    emitWithAck('connect-transport', { roomId, transportId: recvTransport.id, dtlsParameters })
+      .then(callback).catch(errback);
+  });
+}
+
+async function produceLocalTracks() {
+  const audioTrack = localStream.getAudioTracks()[0];
+  if (audioTrack) {
+    micProducer = await sendTransport.produce({ track: audioTrack, appData: { mediaType: 'mic' } });
+  }
+
+  const videoTrack = localStream.getVideoTracks()[0];
+  if (videoTrack) {
+    cameraProducer = await sendTransport.produce({ track: videoTrack, appData: { mediaType: 'camera' } });
   }
 }
 
-// Candidates that arrive before we've set the remote description yet get
-// queued here instead of being silently dropped (a common cause of
-// "sometimes no video/audio" on real networks where messages can arrive
-// slightly out of order).
-const pendingCandidates = {}; // remoteId -> [candidate, ...]
-
-async function flushPendingCandidates(remoteId, pc) {
-  const queued = pendingCandidates[remoteId] || [];
-  pendingCandidates[remoteId] = [];
-  for (const candidate of queued) {
-    try { await pc.addIceCandidate(candidate); } catch (e) { console.warn(e); }
-  }
+function getOrCreateMainStream(socketId) {
+  if (!mainStreams[socketId]) mainStreams[socketId] = new MediaStream();
+  return mainStreams[socketId];
 }
 
-// Called when we already know about a peer and need to INITIATE the connection
-async function callPeer(remoteId, remoteName) {
-  const pc = createPeerConnection(remoteId, remoteName);
-  isInitiator[remoteId] = true;
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  socket.emit('signal', { to: remoteId, data: { type: 'offer', sdp: offer } });
+// Start receiving a specific remote producer (someone's mic, camera, or screen)
+async function consumeProducer(roomId, { producerId, socketId, kind, appData }) {
+  if (!readyToConsume) { queuedProducers.push({ producerId, socketId, kind, appData }); return; }
+  if (socketId === socket.id) return; // never consume our own media
+
+  const result = await emitWithAck('consume', { roomId, producerId, rtpCapabilities: device.rtpCapabilities });
+  if (result.error) { console.warn('Could not consume', producerId, result.error); return; }
+
+  const consumer = await recvTransport.consume({
+    id: result.id,
+    producerId: result.producerId,
+    kind: result.kind,
+    rtpParameters: result.rtpParameters,
+  });
+  consumersByProducerId[producerId] = { consumer, socketId, mediaType: appData?.mediaType };
+
+  await emitWithAck('resume-consumer', { roomId, consumerId: consumer.id });
+
+  routeIncomingTrack(socketId, appData?.mediaType, consumer.track);
 }
 
-// Incoming signaling messages (offer / answer / ICE) from other peers
-socket.on('signal', async ({ from, data }) => {
-  let pc = peers[from];
+// Decides which UI element a newly-arrived track belongs in, based on the
+// sender's role and what kind of media it is (mic/camera/screen)
+function routeIncomingTrack(socketId, mediaType, track) {
+  const remoteRole = participants[socketId]?.role;
 
-  if (data.type === 'offer') {
-    if (!pc) pc = createPeerConnection(from, participants[from]?.name);
-    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    await flushPendingCandidates(from, pc); // any candidates that arrived early can now be applied
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit('signal', { to: from, data: { type: 'answer', sdp: answer } });
-
-  } else if (data.type === 'answer') {
-    if (pc) {
-      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      await flushPendingCandidates(from, pc);
-    }
-
-  } else if (data.type === 'ice-candidate') {
-    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-      // Remote description already set - safe to apply immediately
-      try { await pc.addIceCandidate(data.candidate); } catch (e) { console.warn(e); }
-    } else {
-      // Remote description not set yet - queue it instead of dropping it
-      if (!pendingCandidates[from]) pendingCandidates[from] = [];
-      pendingCandidates[from].push(data.candidate);
-    }
+  if (mediaType === 'screen') {
+    // Only the instructor shares their screen in this app - it always goes
+    // on the main stage. Visibility (whiteboard vs screen) is controlled by
+    // the screen-share-started/stopped broadcast, not here.
+    document.getElementById('screen-video').srcObject = new MediaStream([track]);
+    return;
   }
-});
 
-// The server tells us who is already in the room when we join (or rejoin
-// after a brief disconnect). We INITIATE a call to each of them - but skip
-// anyone we already have a live connection to, so a reconnect doesn't
-// create duplicate connections.
+  // mic or camera - combine into one MediaStream per person, so audio+video
+  // play together from whichever element represents them
+  const stream = getOrCreateMainStream(socketId);
+  stream.addTrack(track);
+
+  if (remoteRole === 'instructor') {
+    document.getElementById('instructor-video-el').srcObject = stream;
+    return;
+  }
+
+  // Another student - small tile in the grid. Audio-only peers still need a
+  // playing element for their mic - just hidden visually.
+  let videoEl = document.getElementById('video-' + socketId);
+  if (!videoEl) {
+    videoEl = document.createElement('video');
+    videoEl.id = 'video-' + socketId;
+    videoEl.autoplay = true;
+    videoEl.playsinline = true;
+    document.getElementById('remote-videos').appendChild(videoEl);
+  }
+  videoEl.srcObject = stream;
+  videoEl.classList.toggle('audio-only', stream.getVideoTracks().length === 0);
+}
+
+// ---- Socket event wiring ----
+
 socket.on('existing-participants', (list) => {
   list.forEach(p => {
     participants[p.id] = { name: p.name, role: p.role };
     if (!document.getElementById('participant-' + p.id)) addParticipantToList(p.id, p.name);
-
-    const existingPc = peers[p.id];
-    const alreadyConnected = existingPc &&
-      (existingPc.connectionState === 'connected' || existingPc.connectionState === 'connecting');
-    if (!alreadyConnected) {
-      callPeer(p.id, p.name);
-    }
   });
   updateParticipantCount();
 });
 
-// Someone new joined after us - we just wait for their offer (they call us)
 socket.on('participant-joined', ({ id, name, role }) => {
   participants[id] = { name, role };
   if (!document.getElementById('participant-' + id)) addParticipantToList(id, name);
   updateParticipantCount();
 });
 
+socket.on('existing-producers', (list) => {
+  list.forEach(p => consumeProducer(myRoomId, p));
+});
+
+socket.on('new-producer', ({ producerId, socketId, name, role, kind, appData }) => {
+  if (name && role) participants[socketId] = { name, role }; // in case it arrives before participant-joined
+  consumeProducer(myRoomId, { producerId, socketId, kind, appData });
+});
+
+socket.on('producer-closed', ({ producerId }) => {
+  const entry = consumersByProducerId[producerId];
+  if (!entry) return;
+  const { consumer, socketId, mediaType } = entry;
+
+  if (mediaType === 'screen') {
+    document.getElementById('screen-video').srcObject = null;
+  } else {
+    const stream = mainStreams[socketId];
+    if (stream) stream.removeTrack(consumer.track);
+  }
+
+  consumer.close();
+  delete consumersByProducerId[producerId];
+});
+
 socket.on('participant-left', ({ id }) => {
-  if (peers[id]) { peers[id].close(); delete peers[id]; }
   delete participants[id];
-  delete pendingCandidates[id];
-  delete isInitiator[id];
+  delete mainStreams[id];
   const videoEl = document.getElementById('video-' + id);
   if (videoEl) videoEl.remove();
   const rowEl = document.getElementById('participant-' + id);
   if (rowEl) rowEl.remove();
   updateParticipantCount();
+});
+
+socket.on('screen-share-started', () => {
+  document.getElementById('screen-video').classList.remove('hidden');
+  document.getElementById('whiteboard').classList.add('hidden');
+});
+
+socket.on('screen-share-stopped', () => {
+  const screenVideoEl = document.getElementById('screen-video');
+  screenVideoEl.classList.add('hidden');
+  screenVideoEl.srcObject = null;
+  document.getElementById('whiteboard').classList.remove('hidden');
 });
 
 function addParticipantToList(id, name) {
@@ -230,6 +243,7 @@ function updateParticipantCount() {
 // ---- Mic / camera toggles ----
 function toggleMic() {
   const track = localStream.getAudioTracks()[0];
+  if (!track) return false;
   track.enabled = !track.enabled;
   return track.enabled;
 }
@@ -248,32 +262,30 @@ window.forceMuteLocalMic = function () {
   document.getElementById('mic-toggle-btn').textContent = 'Unmute Mic';
 };
 
-// ---- Screen share: replace the outgoing video track on every peer connection ----
+// ---- Screen share: a separate producer, only ever created by the instructor ----
 async function startScreenShare() {
   const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   const screenTrack = screenStream.getVideoTracks()[0];
 
-  Object.values(peers).forEach(pc => {
-    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-    if (sender) sender.replaceTrack(screenTrack);
-  });
+  screenProducer = await sendTransport.produce({ track: screenTrack, appData: { mediaType: 'screen' } });
 
   const screenVideo = document.getElementById('screen-video');
   screenVideo.srcObject = screenStream;
+  socket.emit('screen-share-started', { roomId: myRoomId });
 
-  // When the user stops sharing (browser's built-in "Stop sharing" button),
-  // switch back to the camera track automatically
   screenTrack.onended = () => stopScreenShare();
 
   return screenStream;
 }
 
-function stopScreenShare() {
-  const camTrack = localStream.getVideoTracks()[0];
-  Object.values(peers).forEach(pc => {
-    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-    if (sender && camTrack) sender.replaceTrack(camTrack);
-  });
+async function stopScreenShare() {
+  if (screenProducer) {
+    socket.emit('close-producer', { roomId: myRoomId, producerId: screenProducer.id });
+    screenProducer.close();
+    screenProducer = null;
+  }
+
   document.getElementById('screen-video').classList.add('hidden');
   document.getElementById('screen-video').srcObject = null;
+  socket.emit('screen-share-stopped', { roomId: myRoomId });
 }

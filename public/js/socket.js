@@ -19,7 +19,7 @@ function joinRoom(name, role, roomId) {
   myRole = role;
   myRoomId = roomId;
   hasJoinedOnce = true;
-  socket.emit('join-room', { roomId, name, role }); //sends event to nodejs server/index.js
+  socket.emit('join-room', { roomId, name, role });
 }
 
 // A brief WiFi drop disconnects the socket. Socket.IO reconnects
@@ -55,4 +55,9 @@ function escapeHtml(str) {
 
 socket.on('force-mute', () => {
   if (window.forceMuteLocalMic) window.forceMuteLocalMic();
+});
+
+socket.on('session-ended', () => {
+  alert('The instructor has ended this session.');
+  window.location.reload();
 });
