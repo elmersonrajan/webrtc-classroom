@@ -201,6 +201,7 @@ io.on('connection', (socket) => {
 
   socket.on('consume', async ({ roomId, producerId, rtpCapabilities }, callback) => {
     const room = rooms[roomId];
+    if (!room) return callback({ error: 'room not found yet - try again in a moment' });
     if (!room.router.canConsume({ producerId, rtpCapabilities })) {
       return callback({ error: 'cannot consume' });
     }
@@ -214,11 +215,15 @@ io.on('connection', (socket) => {
       paused: true, // client will tell us to resume once it's ready to render
     });
 
+    // room.consumers[socket.id] is normally set up during join-room, but that
+    // handler is async - a fast client can have this request arrive before
+    // it finishes. Create it here too instead of assuming it already exists.
+    if (!room.consumers[socket.id]) room.consumers[socket.id] = {};
     room.consumers[socket.id][consumer.id] = consumer;
 
-    consumer.on('transportclose', () => { delete room.consumers[socket.id][consumer.id]; });
+    consumer.on('transportclose', () => { delete room.consumers[socket.id]?.[consumer.id]; });
     consumer.on('producerclose', () => {
-      delete room.consumers[socket.id][consumer.id];
+      delete room.consumers[socket.id]?.[consumer.id];
       socket.emit('producer-closed', { producerId });
     });
 
