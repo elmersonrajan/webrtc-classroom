@@ -45,7 +45,11 @@ micBtn.addEventListener('click', () => {
 });
 
 document.getElementById('mute-others-btn').addEventListener('click', () => {
-  Object.keys(peers).forEach(id => socket.emit('mute-participant', { targetId: id }));
+  // NOTE: this used to reference `peers`, a leftover from the old mesh
+  // implementation. The SFU version tracks people in `participants`
+  // (declared in webrtc.js) - using the wrong name threw a ReferenceError
+  // and silently killed this button. Fixed to use `participants`.
+  Object.keys(participants).forEach(id => socket.emit('mute-participant', { targetId: id }));
 });
 
 // Composite recording: draws the whiteboard (or screen share, whichever is
