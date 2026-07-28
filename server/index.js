@@ -37,6 +37,15 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 // set this to your computer's LAN IP (the same one you use to open the
 // site from your phone, e.g. 192.168.1.42). Find it with `ipconfig`
 // (Windows) or `ifconfig`/`ip addr` (Mac/Linux).
+//
+// Run the server like:
+//   Mac/Linux:   ANNOUNCED_IP=192.168.1.42 npm start
+//   Windows:     set ANNOUNCED_IP=192.168.1.42 && npm start
+//
+// Without this set, mediasoup can only negotiate real media on localhost -
+// other devices will join, chat, and see the whiteboard fine (that's all
+// plain Socket.IO), but audio/video will never connect because the ICE
+// candidates it hands out aren't reachable from another machine.
 const ANNOUNCED_IP = process.env.ANNOUNCED_IP || null; // null = auto (works on localhost only)
 
 // mediasoup sends actual media over these UDP ports - make sure your
