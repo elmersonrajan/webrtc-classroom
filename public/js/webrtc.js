@@ -114,6 +114,58 @@ function getOrCreateMainStream(socketId) {
   return mainStreams[socketId];
 }
 
+// ------------------------------------------------------------------
+// Autoplay handling
+// ------------------------------------------------------------------
+// Browsers block .play() on <video>/<audio> elements with sound unless it
+// happens very close to a real user click. By the time a remote track
+// arrives here, we've gone through several `await`s (device load, transport
+// setup, consume round-trip) since the user clicked "Join session", so the
+// browser's permission window has usually expired. That's why remote video
+// looked like a black screen and there was no sound, even though the data
+// was arriving fine.
+//
+// Fix: always call .play() ourselves and check whether it was blocked. If
+// it was, show a one-time "Click to enable audio/video" banner - clicking
+// it is a fresh user gesture, which satisfies the browser and unlocks
+// playback for every remote element on the page.
+let playbackBlocked = false;
+
+function tryPlay(videoEl) {
+  const playPromise = videoEl.play();
+  if (playPromise && typeof playPromise.catch === 'function') {
+    playPromise.catch((err) => {
+      if (err.name === 'NotAllowedError') {
+        showUnlockPlaybackBanner();
+      } else {
+        console.warn('video.play() failed:', err);
+      }
+    });
+  }
+}
+
+function showUnlockPlaybackBanner() {
+  if (playbackBlocked) return; // already showing
+  playbackBlocked = true;
+
+  const banner = document.createElement('div');
+  banner.id = 'unlock-playback-banner';
+  banner.textContent = 'Click here to enable audio & video';
+  banner.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    background: #d94b4b; color: #fff; text-align: center;
+    padding: 14px; font-weight: 600; font-size: 15px; cursor: pointer;
+  `;
+  banner.addEventListener('click', () => {
+    // Re-attempt play() on every remote video element now that we have a
+    // fresh, real user click to satisfy the browser's autoplay policy.
+    document.querySelectorAll('video').forEach((el) => { if (el.srcObject) tryPlay(el); });
+    banner.remove();
+    playbackBlocked = false;
+  });
+  document.body.appendChild(banner);
+}
+
 // Start receiving a specific remote producer (someone's mic, camera, or screen)
 async function consumeProducer(roomId, { producerId, socketId, kind, appData }) {
   if (!readyToConsume) { queuedProducers.push({ producerId, socketId, kind, appData }); return; }
@@ -144,7 +196,9 @@ function routeIncomingTrack(socketId, mediaType, track) {
     // Only the instructor shares their screen in this app - it always goes
     // on the main stage. Visibility (whiteboard vs screen) is controlled by
     // the screen-share-started/stopped broadcast, not here.
-    document.getElementById('screen-video').srcObject = new MediaStream([track]);
+    const screenEl = document.getElementById('screen-video');
+    screenEl.srcObject = new MediaStream([track]);
+    tryPlay(screenEl);
     return;
   }
 
@@ -154,7 +208,9 @@ function routeIncomingTrack(socketId, mediaType, track) {
   stream.addTrack(track);
 
   if (remoteRole === 'instructor') {
-    document.getElementById('instructor-video-el').srcObject = stream;
+    const el = document.getElementById('instructor-video-el');
+    el.srcObject = stream;
+    tryPlay(el);
     return;
   }
 
@@ -170,6 +226,7 @@ function routeIncomingTrack(socketId, mediaType, track) {
   }
   videoEl.srcObject = stream;
   videoEl.classList.toggle('audio-only', stream.getVideoTracks().length === 0);
+  tryPlay(videoEl);
 }
 
 // ---- Socket event wiring ----
