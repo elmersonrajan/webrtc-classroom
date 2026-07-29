@@ -47,9 +47,37 @@ async function startLocalMedia(role) {
   return localStream;
 }
 
-// Called once, right after joining a room - sets up the mediasoup Device
-// and both transports, then starts sending our own camera/mic.
+// Called right after joining a room - sets up the mediasoup Device and both
+// transports, then starts sending our own camera/mic.
+//
+// IMPORTANT: this can be called MORE THAN ONCE. If the Socket.IO connection
+// drops and reconnects (a WiFi blip, a tab being backgrounded, etc.), the
+// server gets a brand new socket.id and throws away our old transports -
+// but our browser doesn't know that unless we rebuild everything. socket.js
+// calls this again on every reconnect, so it needs to safely tear down and
+// recreate the old mediasoup objects rather than assuming this is the first
+// time.
 async function setupMediasoup(roomId, role) {
+  if (device) {
+    // Not our first time through - the old transports/producers/consumers
+    // belonged to a previous socket connection that's now gone. Clean up
+    // client-side references before rebuilding, otherwise we keep trying
+    // to use dead objects (this is what caused "no recv transport" errors).
+    try { sendTransport && sendTransport.close(); } catch (err) { /* already dead, ignore */ }
+    try { recvTransport && recvTransport.close(); } catch (err) { /* already dead, ignore */ }
+    Object.values(consumersByProducerId).forEach(({ consumer }) => {
+      try { consumer.close(); } catch (err) { /* already dead, ignore */ }
+    });
+    Object.keys(consumersByProducerId).forEach(key => delete consumersByProducerId[key]);
+    Object.keys(mainStreams).forEach(key => delete mainStreams[key]);
+    micProducer = null;
+    cameraProducer = null;
+    screenProducer = null;
+  }
+
+  readyToConsume = false;
+  queuedProducers = [];
+
   await window.mediasoupClientReadyPromise; // wait for the CDN import (see index.html) to finish
   if (!window.mediasoupClient || !window.mediasoupClient.Device) {
     throw new Error(
@@ -60,12 +88,14 @@ async function setupMediasoup(roomId, role) {
 
   const { rtpCapabilities } = await emitWithAck('get-router-rtp-capabilities', { roomId });
 
+  // A mediasoup-client Device can only be loaded once, so on reconnect we
+  // need a fresh instance rather than reusing the old (already-loaded) one.
   device = new window.mediasoupClient.Device();
   await device.load({ routerRtpCapabilities: rtpCapabilities });
 
   await createSendTransport(roomId);
   await createRecvTransport(roomId);
-  await produceLocalTracks();
+  await produceLocalTracks(); // reuses the existing localStream/tracks from getUserMedia - those survive a socket reconnect fine
 
   readyToConsume = true;
   queuedProducers.forEach(p => consumeProducer(roomId, p));
