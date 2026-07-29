@@ -23,14 +23,26 @@ function joinRoom(name, role, roomId) {
 }
 
 // A brief WiFi drop disconnects the socket. Socket.IO reconnects
-// automatically, but with a NEW connection - the server no longer
-// considers us part of the room, so chat/whiteboard/participant events
-// would silently stop arriving. Rejoining on every (re)connect fixes that.
-// (Existing WebRTC peer connections are handled separately in webrtc.js -
-// this only restores the signaling/chat side.)
+// automatically, but with a NEW connection (new socket.id) - the server no
+// longer considers us part of the room, so chat/whiteboard/participant
+// events would silently stop arriving. Rejoining on every (re)connect fixes
+// that signaling side.
+//
+// But the server also throws away our old mediasoup transports/producers
+// when the old socket disconnects (see server/index.js's disconnect
+// handler) - so we ALSO need to rebuild the actual media connection here,
+// not just the signaling one. Without this, video/audio silently breaks
+// after any reconnect even though chat and the whiteboard keep working -
+// setupMediasoup() is written to be safely callable again for exactly this.
 socket.on('connect', () => {
   if (hasJoinedOnce) {
     socket.emit('join-room', { roomId: myRoomId, name: myName, role: myRole });
+
+    if (window.setupMediasoup) {
+      setupMediasoup(myRoomId, myRole).catch((err) => {
+        console.error('Failed to rebuild the media connection after reconnect:', err);
+      });
+    }
   }
 });
 
