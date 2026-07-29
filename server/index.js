@@ -87,19 +87,39 @@ async function createWorker() {
 //   consumers: { socketId: { consumerId: consumer } }
 // }
 const rooms = {};
+const roomCreationInFlight = {}; // roomId -> Promise, so concurrent callers share one creation instead of racing
 
 async function getOrCreateRoom(roomId) {
-  if (!rooms[roomId]) {
-    const router = await worker.createRouter({ mediaCodecs: MEDIA_CODECS });
-    rooms[roomId] = {
-      router,
-      participants: {},
-      transports: {},
-      producers: {},
-      consumers: {},
-    };
+  if (rooms[roomId]) return rooms[roomId];
+
+  // Several requests can arrive for a brand-new room in quick succession
+  // (join-room, get-router-rtp-capabilities, create-transport x2 all fire
+  // close together when a client connects). Without this guard, each one
+  // would see the room missing and create its OWN separate room object,
+  // with whichever finished last silently overwriting the others - any
+  // participant/producer already added to an earlier "loser" object would
+  // vanish, even though nothing ever errored. This guard makes every
+  // concurrent caller await the SAME creation instead.
+  if (!roomCreationInFlight[roomId]) {
+    roomCreationInFlight[roomId] = (async () => {
+      const router = await worker.createRouter({ mediaCodecs: MEDIA_CODECS });
+      const room = {
+        _debugId: `${roomId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        router,
+        participants: {},
+        transports: {},
+        producers: {},
+        consumers: {},
+      };
+      console.log(`[room-created] ${room._debugId}`);
+      rooms[roomId] = room;
+      return room;
+    })();
   }
-  return rooms[roomId];
+
+  const room = await roomCreationInFlight[roomId];
+  delete roomCreationInFlight[roomId]; // safe to clean up now that rooms[roomId] is set
+  return room;
 }
 
 function transportOptions() {
@@ -122,16 +142,20 @@ io.on('connection', (socket) => {
     socket.data.role = role;
 
     const room = await getOrCreateRoom(roomId);
+    console.log(`[join-room handler] socket=${socket.id} using room ${room._debugId}, participants BEFORE adding self:`, Object.keys(room.participants));
 
     const existing = Object.entries(room.participants).map(([id, p]) => ({
       id, name: p.name, role: p.role
     }));
+    console.log(`[emit] existing-participants -> ${socket.id} :`, JSON.stringify(existing));
     socket.emit('existing-participants', existing);
 
     room.participants[socket.id] = { name, role };
     room.transports[socket.id] = {};
     room.consumers[socket.id] = {};
+    console.log(`[join-room handler] socket=${socket.id} added self, participants AFTER:`, Object.keys(room.participants));
 
+    console.log(`[emit] participant-joined -> room ${roomId} (everyone except ${socket.id}):`, name, role);
     socket.to(roomId).emit('participant-joined', { id: socket.id, name, role });
 
     // Tell the new arrival about every producer already active in the room,
@@ -139,9 +163,10 @@ io.on('connection', (socket) => {
     const existingProducers = Object.entries(room.producers).map(([producerId, p]) => ({
       producerId, socketId: p.socketId, kind: p.kind, appData: p.appData,
     }));
+    console.log(`[emit] existing-producers -> ${socket.id} :`, JSON.stringify(existingProducers));
     socket.emit('existing-producers', existingProducers);
 
-    console.log(`[join] ${name} (${role}) -> room ${roomId}`);
+    console.log(`[join] ${name} (${role}) -> room ${roomId} | room now has ${Object.keys(room.participants).length} participant(s), ${Object.keys(room.producers).length} producer(s)`);
   });
 
   // ---- mediasoup handshake ----
@@ -176,6 +201,7 @@ io.on('connection', (socket) => {
 
   socket.on('produce', async ({ roomId, transportId, kind, rtpParameters, appData }, callback) => {
     const room = rooms[roomId];
+    console.log(`[produce handler] socket=${socket.id} using room ${room?._debugId}, participants currently:`, room ? Object.keys(room.participants) : 'NO ROOM');
     const transport = findTransport(room, socket.id, transportId);
     if (!transport) return callback({ error: 'transport not found' });
 
@@ -280,9 +306,10 @@ io.on('connection', (socket) => {
   });
 
   // ---- Cleanup on disconnect ----
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason) => {
     const roomId = socket.data.roomId;
     const room = rooms[roomId];
+    console.log(`[disconnect-start] socket=${socket.id} reason="${reason}" roomId=${roomId} roomFound=${!!room}${room ? ' room=' + room._debugId : ''}`);
     if (room) {
       // Close this participant's transports/producers/consumers
       const t = room.transports[socket.id];
@@ -300,7 +327,12 @@ io.on('connection', (socket) => {
       delete room.participants[socket.id];
       socket.to(roomId).emit('participant-left', { id: socket.id });
 
-      if (Object.keys(room.participants).length === 0) cleanupRoom(roomId);
+      console.log(`[disconnect-cleanup] socket=${socket.id} removed from room ${room._debugId}, participants now:`, Object.keys(room.participants));
+
+      if (Object.keys(room.participants).length === 0) {
+        console.log(`[cleanupRoom triggered] room ${room._debugId} is now empty, closing it`);
+        cleanupRoom(roomId);
+      }
     }
     console.log(`[disconnect] ${socket.id}`);
   });
